@@ -1223,8 +1223,12 @@ def analyze_gene_for_comparison(
 
         # Direction dominance & G-test
         # s = HMM state: 1 (= F+1), 2 (= F-1)
-        if tm.strand == "+":
-            direction = "+1" if s == 1 else "-1"
+	if s == 1:
+	    direction = "+1"
+	elif s == 2:
+	    direction = "-1"
+	else:
+	    raise ValueError(f"Unexpected off-frame HMM state: {s}")
         
         G, pval = g_test_3x2(case_vec, ctrl_vec)
         pval_pass = (pval is not None and pval <= gtest_alpha)
