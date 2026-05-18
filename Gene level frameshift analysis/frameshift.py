@@ -431,59 +431,97 @@ def merge_sample_results(sample_csv_paths, output_dir):
 
     merged_df = None
 
-    # We will collect the names of frameshift and total count columns
-    # so we can do filtering and final assembly easily.
-    fs_columns = []
+    fs_raw_columns = []
+    fs_pseudo_columns = []
     total_count_columns = []
+    zero_in_frame_columns = []
+
+    pseudo = 0.5
 
     for sample_name, csv_path in sample_csv_paths:
         df = pd.read_csv(csv_path)
 
-        # Ensure the CSV has the columns we need
         required_cols = {
-            "Gene", 
-            "Counts_in_0_frame", 
-            "Counts_in_+1_frame", 
-            "Counts_in_+2_frame", 
+            "Gene",
+            "Counts_in_0_frame",
+            "Counts_in_+1_frame",
+            "Counts_in_+2_frame",
             "Frameshift_score"
         }
+
         if not required_cols.issubset(df.columns):
             raise ValueError(
                 f"File {csv_path} is missing one or more required columns: "
                 f"{required_cols - set(df.columns)}"
             )
 
-        # Compute total counts for filtering
-        df["Total_Counts"] = (
-            df["Counts_in_0_frame"] + 
-            df["Counts_in_+1_frame"] + 
+        # ---------------------------------------------------------------------
+        # Compute count-based quantities
+        # ---------------------------------------------------------------------
+        df["Off_Frame_Counts"] = (
+            df["Counts_in_+1_frame"] +
             df["Counts_in_+2_frame"]
         )
 
+        df["Total_Counts"] = (
+            df["Counts_in_0_frame"] +
+            df["Off_Frame_Counts"]
+        )
+
+        # Raw FS is whatever came from the sample file:
+        # off_frame / frame0, NaN when frame0 == 0.
+        df["FS_raw"] = df["Frameshift_score"]
+
+        # Biologically reasonable finite ratio for downstream analysis.
+        # This avoids infinite/undefined ratios without assigning an arbitrary 10.
+        df["FS_pseudocount"] = (
+            (df["Off_Frame_Counts"] + pseudo) /
+            (df["Counts_in_0_frame"] + pseudo)
+        )
+
+        # QC flag: cases where raw FS is undefined because frame0 is zero
+        # but off-frame reads exist.
+        df["Zero_In_Frame"] = (
+            (df["Counts_in_0_frame"] == 0) &
+            (df["Off_Frame_Counts"] > 0)
+        )
+
+        # ---------------------------------------------------------------------
         # Rename columns to keep them unique across samples
-        fs_col_name = f"{sample_name}_FS"
+        # ---------------------------------------------------------------------
+        fs_raw_col_name = f"{sample_name}_FS_raw"
+        fs_pseudo_col_name = f"{sample_name}_FS"
         total_col_name = f"{sample_name}_TotalCounts"
+        zero_col_name = f"{sample_name}_ZeroInFrame"
 
         df.rename(
             columns={
-                "Frameshift_score": fs_col_name,
-                "Total_Counts": total_col_name
+                "FS_raw": fs_raw_col_name,
+                "FS_pseudocount": fs_pseudo_col_name,
+                "Total_Counts": total_col_name,
+                "Zero_In_Frame": zero_col_name
             },
             inplace=True
         )
 
-        # Keep only the columns we need for merging
-        # (Gene, frameshift score, total counts)
-        df = df[["Gene", fs_col_name, total_col_name]]
+        # Keep only columns needed for merging
+        df = df[[
+            "Gene",
+            fs_raw_col_name,
+            fs_pseudo_col_name,
+            total_col_name,
+            zero_col_name
+        ]]
 
-        # Merge into the main dataframe
         if merged_df is None:
             merged_df = df
         else:
             merged_df = pd.merge(merged_df, df, on="Gene", how="outer")
 
-        fs_columns.append(fs_col_name)
+        fs_raw_columns.append(fs_raw_col_name)
+        fs_pseudo_columns.append(fs_pseudo_col_name)
         total_count_columns.append(total_col_name)
+        zero_in_frame_columns.append(zero_col_name)
 
     # -------------------------------------------------------------------------
     # 1) Filter: Keep only genes that have >= 10 total counts in EVERY sample
@@ -492,23 +530,48 @@ def merge_sample_results(sample_csv_paths, output_dir):
     merged_df = merged_df[condition].copy()
 
     # -------------------------------------------------------------------------
-    # 2) Replace missing (NaN) frameshift scores with 10
+    # 2) Do NOT fill missing raw FS scores with 10
     # -------------------------------------------------------------------------
-    for col in fs_columns:
-        merged_df[col] = merged_df[col].fillna(10)
+    # Raw FS values remain NaN when Counts_in_0_frame == 0.
+    # The pseudocount FS matrix provides the finite analysis-ready version.
 
     # -------------------------------------------------------------------------
-    # Create the final FS matrix with just Gene + FS columns
+    # Save full merged table
     # -------------------------------------------------------------------------
-    final_cols = ["Gene"] + fs_columns
-    final_df = merged_df[final_cols]
+    full_csv = os.path.join(output_dir, "merged_FS_matrix_all_metrics.csv")
+    merged_df.to_csv(full_csv, index=False)
 
-    # Save the merged and filtered results
-    merged_csv = os.path.join(output_dir, "merged_FS_matrix.csv")
-    final_df.to_csv(merged_csv, index=False)
-    logger.info(f"Merged FS score matrix saved to {merged_csv}")
+    # -------------------------------------------------------------------------
+    # Save raw FS matrix with NaN retained
+    # -------------------------------------------------------------------------
+    raw_cols = ["Gene"] + fs_raw_columns
+    raw_df = merged_df[raw_cols]
 
-    return merged_csv
+    raw_csv = os.path.join(output_dir, "merged_FS_matrix_raw.csv")
+    raw_df.to_csv(raw_csv, index=False)
+    logger.info(f"Raw merged FS matrix saved to {raw_csv}")
+
+    # -------------------------------------------------------------------------
+    # Save pseudocount FS matrix for downstream differential analysis
+    # -------------------------------------------------------------------------
+    pseudo_cols = ["Gene"] + fs_pseudo_columns
+    pseudo_df = merged_df[pseudo_cols]
+
+    pseudo_csv = os.path.join(output_dir, "merged_FS_matrix.csv")
+    pseudo_df.to_csv(pseudo_csv, index=False)
+    logger.info(f"Pseudocount-corrected merged FS matrix saved to {pseudo_csv}")
+
+    # -------------------------------------------------------------------------
+    # Save zero-in-frame QC table
+    # -------------------------------------------------------------------------
+    zero_cols = ["Gene"] + zero_in_frame_columns
+    zero_df = merged_df[zero_cols]
+
+    zero_csv = os.path.join(output_dir, "merged_FS_zero_in_frame_flags.csv")
+    zero_df.to_csv(zero_csv, index=False)
+    logger.info(f"Zero-in-frame QC matrix saved to {zero_csv}")
+
+    return pseudo_csv
 
 
 # =============================================================================
