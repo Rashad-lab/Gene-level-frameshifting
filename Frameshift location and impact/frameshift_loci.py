@@ -523,14 +523,14 @@ def build_transcript_models(gtf_path, transcript_choice="longest_cds", nm_prefer
                         starts_arr = np.array([], dtype=np.int64)
                         ends_arr   = np.array([], dtype=np.int64)
                         idx_arr    = np.array([], dtype=np.int64)
-                        block_meta.append({
-                    "chrom": b.chrom,
-                    "start": b.start,
-                    "end": b.end,
-                    "codon_starts": np.array(starts_this, dtype=np.int64),
-                    "codon_ends":   np.array(ends_this,   dtype=np.int64),
-                    "codon_idx":    np.array(idx_this,    dtype=np.int64)
-                })
+                    block_meta.append({
+                    	"chrom": b.chrom,
+                    	"start": b.start,
+                    	"end": b.end,
+                    	"codon_starts": np.array(starts_this, dtype=np.int64),
+                    	"codon_ends":   np.array(ends_this,   dtype=np.int64),
+                    	"codon_idx":    np.array(idx_this,    dtype=np.int64)
+                	})
 
         cds_len_nt = sum(b.end - b.start for b in blks)
         gene_models[gene] = TranscriptModel(
